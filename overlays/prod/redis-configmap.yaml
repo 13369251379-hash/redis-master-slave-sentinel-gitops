@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: redis-prod
+    app.kubernetes.io/environment: prod
+data:
+  redis.conf: |
+    # ========== 网络 / 基础 ==========
+    bind 0.0.0.0
+    protected-mode yes
+    port 6379
+    daemonize no
+    timeout 0
+    tcp-keepalive 60
+
+    # ========== 内存 ==========
+    # 保守起步值，最终按压测调整
+    maxmemory 1280mb
+    maxmemory-policy noeviction
+    maxmemory-clients 5%
+
+    # ========== 复制 ==========
+    replica-read-only yes
+    # 分区分裂/全量重同步期间不对外提供旧数据
+    replica-serve-stale-data no
+    repl-ping-replica-period 10
+    repl-timeout 60
+    repl-diskless-sync yes
+    repl-diskless-sync-delay 5
+    repl-backlog-size 64mb
+    # 防脑裂：至少 1 个 Slave 在 10s 内完成同步才允许写入
+    min-replicas-to-write 1
+    min-replicas-max-lag 10
+
+    # ========== 持久化（RDB + AOF 双写） ==========
+    dir /data
+    dbfilename dump.rdb
+    save 900 1
+    save 300 10
+    save 60 10000
+    stop-writes-on-bgsave-error yes
+    rdbcompression yes
+    rdbchecksum yes
+    appendonly yes
+    appendfilename "appendonly.aof"
+    appendfsync everysec
+    no-appendfsync-on-rewrite no
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    aof-use-rdb-preamble yes
+
+    # ========== lazyfree ==========
+    lazyfree-lazy-eviction yes
+    lazyfree-lazy-expire yes
+    lazyfree-lazy-server-del yes
+
+    # ========== 慢日志 / 延迟监控 ==========
+    slowlog-log-slower-than 10000
+    slowlog-max-len 256
+    latency-monitor-threshold 100

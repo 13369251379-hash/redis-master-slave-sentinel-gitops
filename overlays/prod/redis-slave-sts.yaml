@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-slave
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: redis-prod
+    app.kubernetes.io/environment: prod
+    app.kubernetes.io/component: slave
+spec:
+  serviceName: redis-slave-headless
+  replicas: 2
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: redis-prod
+      app.kubernetes.io/component: slave
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/instance: redis-prod
+        app.kubernetes.io/environment: prod
+        app.kubernetes.io/component: slave
+    spec:
+      # 反亲和：每个 slave 与 master 及其它 slave 必须分布在不同节点，
+      # 避免单节点宕机同时打挂主+从，保证数据平面不共享故障域
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - redis
+                  - key: app.kubernetes.io/component
+                    operator: In
+                    values:
+                      - master
+                      - slave
+              topologyKey: kubernetes.io/hostname
+      imagePullSecrets:
+        - name: gitlab-registry
+      containers:
+        - name: redis
+          image: gitlab-docker.racobit.com/open/docker-reg/redis:7.4.3
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-server
+          args:
+            - /etc/redis/redis.conf
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --masterauth
+            - $(REDIS_PASSWORD)
+            - --replicaof
+            - redis-master-headless
+            - "6379"
+            # 用自身 Pod FQDN 广播，故障转移后哨兵按域名识别/广播本节点
+            - --replica-announce-ip
+            - $(REPLICA_ANNOUNCE_ADDR)
+          ports:
+            - name: redis
+              containerPort: 6379
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: REPLICA_ANNOUNCE_ADDR
+              value: $(POD_NAME).redis-slave-headless.$(POD_NAMESPACE).svc.cluster.local
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis-password
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli -a $REDIS_PASSWORD --no-auth-warning ping
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli -a $REDIS_PASSWORD --no-auth-warning ping
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          volumeMounts:
+            - name: redis-config
+              mountPath: /etc/redis
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: redis-config
+          configMap:
+            name: redis-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: redis
+          app.kubernetes.io/instance: redis-prod
+          app.kubernetes.io/environment: prod
+          app.kubernetes.io/component: slave
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: alicloud-disk-essd
+        resources:
+          requests:
+            storage: 20Gi

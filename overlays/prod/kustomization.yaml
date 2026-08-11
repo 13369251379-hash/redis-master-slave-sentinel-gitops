@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: prod
+
+resources:
+  - namespace.yaml
+  - secret.yaml
+  - imagepullsecret.yaml
+  - redis-configmap.yaml
+  - sentinel-configmap.yaml
+  - redis-master-sts.yaml
+  - redis-slave-sts.yaml
+  - redis-sentinel-sts.yaml
+  - redis-master-svc.yaml
+  - redis-slave-svc.yaml
+  - redis-sentinel-svc.yaml
+  - nodeport.yaml
+
+labels:
+  - includeSelectors: true
+    pairs:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: redis-prod
+      app.kubernetes.io/environment: prod

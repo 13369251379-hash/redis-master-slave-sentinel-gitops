@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinel-config
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: redis-prod
+    app.kubernetes.io/environment: prod
+data:
+  sentinel.conf: |
+    port 26379
+    requirepass REDIS_PASSWORD_PLACEHOLDER
+    # monitor 目标为 master Pod 的 FQDN（由 init container 渲染占位符），
+    # 故障转移后哨兵对外广播的是节点域名而非 IP
+    sentinel monitor mymaster REDIS_MASTER_PLACEHOLDER 6379 2
+    sentinel auth-pass mymaster REDIS_PASSWORD_PLACEHOLDER
+    sentinel down-after-milliseconds mymaster 30000
+    sentinel failover-timeout mymaster 180000
+    sentinel parallel-syncs mymaster 1
+    # 接受 hostname 形式的节点地址，并在 SENTINEL 命令/INFO/pub-sub 中广播 hostname
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes

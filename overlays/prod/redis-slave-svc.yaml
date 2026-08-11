@@ -1,0 +1,34 @@
+# ============================================================
+# redis-slave-headless —— 无头服务（clusterIP: None）
+#
+# 生产环境内部服务间交互（心跳检查 / 只读访问）一律通过
+# 集群内服务名直接调用，不经过外部 IP / NodePort / 公网，
+# 避免外部网络与安全策略对内部通信的冲击。
+#
+# StatefulSet 的 serviceName 指向本服务，为每个 Pod 提供稳定
+# DNS 身份：redis-slave-0.redis-slave-headless.<ns>.svc...
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-slave-headless
+  annotations:
+    description: >-
+      内部服务间只读访问/心跳使用的无头服务（headless），通过集群 DNS
+      直接解析到各 Slave Pod IP；不对外暴露，避免外部环境与安全冲击
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: redis-prod
+    app.kubernetes.io/environment: prod
+    app.kubernetes.io/component: slave
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: redis-prod
+    app.kubernetes.io/component: slave
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379

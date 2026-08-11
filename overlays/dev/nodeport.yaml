@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-nodeport
+  labels:
+    app.kubernetes.io/component: cache
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/component: cache
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      nodePort: 31379

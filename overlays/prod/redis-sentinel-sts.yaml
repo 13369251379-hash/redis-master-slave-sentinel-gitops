@@ -1,0 +1,165 @@
+# ============================================================
+# 注意：Sentinel 启动时会解析 sentinel.conf 中 sentinel monitor
+# 的 hostname。如果 DNS 未就绪，Sentinel 会 FATAL 退出不重试。
+#
+# 修复方案：init container 先等待 master Pod FQDN 可解析，再将
+# FQDN 写入配置。故障转移完成后哨兵对外广播节点域名而非 IP。
+# ============================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-sentinel
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: redis-prod
+    app.kubernetes.io/environment: prod
+    app.kubernetes.io/component: sentinel
+spec:
+  serviceName: redis-sentinel
+  replicas: 3
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: redis-prod
+      app.kubernetes.io/component: sentinel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/instance: redis-prod
+        app.kubernetes.io/environment: prod
+        app.kubernetes.io/component: sentinel
+    spec:
+      # 反亲和：3 个 sentinel 必须分布在不同节点，保证 quorum=2
+      # 时任意单节点宕机仍有 ≥2 个 sentinel 存活可完成故障切换；
+      # 对数据平面（master/slave）为软反亲和，尽量分散但不强制
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - redis
+                  - key: app.kubernetes.io/component
+                    operator: In
+                    values:
+                      - sentinel
+              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - redis
+                    - key: app.kubernetes.io/component
+                      operator: In
+                      values:
+                        - master
+                        - slave
+                topologyKey: kubernetes.io/hostname
+      imagePullSecrets:
+        - name: gitlab-registry
+      initContainers:
+        - name: config-render
+          image: gitlab-docker.racobit.com/open/docker-reg/redis:7.4.3
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              # 等待 master Pod FQDN 可解析，避免 Sentinel 启动时 DNS 未就绪导致 FATAL 退出；
+              # 将 FQDN 写入 sentinel monitor，故障转移后哨兵对外广播的是域名而非 IP
+              MASTER_FQDN="redis-master-0.redis-master-headless.${POD_NAMESPACE}.svc.cluster.local"
+              for i in $(seq 1 30); do
+                if getent hosts "${MASTER_FQDN}" >/dev/null 2>&1; then
+                  echo "master FQDN resolvable: ${MASTER_FQDN}"
+                  break
+                fi
+                echo "Waiting for master FQDN DNS (${i}/30): ${MASTER_FQDN}"
+                sleep 2
+              done
+              if ! getent hosts "${MASTER_FQDN}" >/dev/null 2>&1; then
+                echo "ERROR: Failed to resolve master FQDN after 60s: ${MASTER_FQDN}"
+                exit 1
+              fi
+              sed -e "s/REDIS_PASSWORD_PLACEHOLDER/${REDIS_PASSWORD}/g" \
+                  -e "s/REDIS_MASTER_PLACEHOLDER/${MASTER_FQDN}/g" \
+                  /etc/redis/template/sentinel.conf > /etc/redis/runtime/sentinel.conf
+              echo "sentinel.conf rendered (monitor: ${MASTER_FQDN})"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis-password
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: sentinel-template
+              mountPath: /etc/redis/template
+            - name: sentinel-config
+              mountPath: /etc/redis/runtime
+      containers:
+        - name: sentinel
+          image: gitlab-docker.racobit.com/open/docker-reg/redis:7.4.3
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-sentinel
+          args:
+            - /etc/redis/runtime/sentinel.conf
+          ports:
+            - name: sentinel
+              containerPort: 26379
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis-password
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli -p 26379 -a $REDIS_PASSWORD --no-auth-warning ping
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli -p 26379 -a $REDIS_PASSWORD --no-auth-warning ping
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          volumeMounts:
+            - name: sentinel-config
+              mountPath: /etc/redis/runtime
+      volumes:
+        - name: sentinel-template
+          configMap:
+            name: sentinel-config
+        - name: sentinel-config
+          emptyDir: {}
